@@ -1,4 +1,51 @@
-# llama.cpp
+# llama.cpp - experimental fork with openai-like chat API
+## ... to enable basic openai chatgpt completions api compatibility in a single binary
+## currently only GGUF models with chatml interaction format are supported, for example the Teknium's excellent [OpenHermes 2 Mistral 7B](https://huggingface.co/teknium/OpenHermes-2-Mistral-7B)
+
+If you just want to run [openhermes2-mistral7b](https://huggingface.co/teknium/OpenHermes-2-Mistral-7B) API endpoint, execute this shell script:
+```
+bash spinup_openhermes_api.sh
+```
+
+Some interesting API request scripts to pique your interest:
+```
+bash test_api_basic.sh
+bash test_api_reflection.sh
+```
+
+You should be able to use openai chat completion API-compatible clients with this binary.
+Interactive python chat examples, with and without openai API client library:
+
+```
+python3 python_chat_api_example.py
+User: who are you
+HermesLLM: I am Hermes, a helpful AI assistant designed to provide information and assistance to users. I'm here to make your life easier by answering questions, providing guidance, and helping you find what you need. How can I assist you today?
+```
+
+```
+python3 python_noopenai_chat_example.py
+User: count from 1 to 3
+HermesLLM: 1, 2, 3
+User: Reflect on my likely rationale behind the previous request
+HermesLLM: Based on your previous request to count from 1 to 3, it is likely that you wanted to see a simple example of how I can perform tasks and follow instructions. This could be part of testing my capabilities or understanding of basic arithmetic and counting.
+```
+
+To build and spin up the server yourself, build with cmake and execute server_oaicompat binary:
+
+```
+    mkdir build
+    cd build
+    cmake ..
+    cmake --build . --config Release --target server_oaicompat
+    # ~4 Gb download
+    wget 'https://huggingface.co/TheBloke/OpenHermes-2-Mistral-7B-GGUF/resolve/main/openhermes-2-mistral-7b.Q4_K_M.gguf'
+    # runs the llm inference api
+    bin/server_oaicompat -m openhermes-2-mistral-7b.Q4_K_M.gguf --port 8088
+```
+
+Likely next features: update llama.cpp and implement stream response in API.
+
+## default llama.cpp doc
 
 ![llama](https://user-images.githubusercontent.com/1991296/230134379-7181e485-c521-4d23-a0d6-f7b3b61ba524.png)
 
