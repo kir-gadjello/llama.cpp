@@ -2,6 +2,8 @@
 ## ... to enable basic openai chatgpt completions api compatibility in a single binary
 ## currently only GGUF models with chatml interaction format are supported, for example the Teknium's excellent [OpenHermes 2 Mistral 7B](https://huggingface.co/teknium/OpenHermes-2-Mistral-7B)
 
+Streaming mode is supported.
+
 If you just want to run [openhermes2-mistral7b](https://huggingface.co/teknium/OpenHermes-2-Mistral-7B) API endpoint, execute this shell script:
 ```
 bash spinup_openhermes_api.sh
@@ -43,7 +45,9 @@ To build and spin up the server yourself, build with cmake and execute server_oa
     bin/server_oaicompat -m openhermes-2-mistral-7b.Q4_K_M.gguf --port 8088
 ```
 
-Likely next features: update llama.cpp and implement stream response in API.
+Likely next features:
+✔️ implement stream response in API - done.
+⏳ update llama.cpp
 
 ## default llama.cpp doc
 
