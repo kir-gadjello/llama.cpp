@@ -183,6 +183,8 @@ static bool server_verbose = false;
 #define LOG_WARNING(MSG, ...) server_log("WARNING", __func__, __LINE__, MSG, __VA_ARGS__)
 #define LOG_INFO(MSG, ...) server_log("INFO", __func__, __LINE__, MSG, __VA_ARGS__)
 
+#define DEFAULT_OAICOMPAT_MODEL "gpt-3.5-turbo-0613"
+
 struct llama_server_context
 {
     bool stream = false;
@@ -216,6 +218,9 @@ struct llama_server_context
     int32_t multibyte_pending = 0;
 
     std::mutex mutex;
+
+    std::string oaicompat_modelname = DEFAULT_OAICOMPAT_MODEL;
+    int oaicompat_stream_update_ctr = 0;
 
     std::unique_lock<std::mutex> lock()
     {
@@ -253,6 +258,7 @@ struct llama_server_context
         multibyte_pending = 0;
         n_remain = 0;
         n_past = 0;
+        oaicompat_stream_update_ctr = 0;
 
         if (grammar != nullptr) {
             llama_grammar_free(grammar);
@@ -811,10 +817,8 @@ static void server_params_parse(int argc, char **argv, server_params &sparams,
             sparams.read_timeout = std::stoi(argv[i]);
             sparams.write_timeout = std::stoi(argv[i]);
         }
-        else if (arg == "-m" || arg == "--model")
-        {
-            if (++i >= argc)
-            {
+        else if (arg == "-m" || arg == "--model") {
+            if (++i >= argc) {
                 invalid_param = true;
                 break;
             }
@@ -1134,9 +1138,21 @@ static std::string random_string()
      return str.substr(0, 32);    // assumes 32 < number of characters in str         
 }
 
-static json format_final_response_oaicompat(llama_server_context &llama, const std::string &content, const std::vector<completion_token_output> &probs, const std::string &modelname)
+std::string gen_chatcmplid() {
+    std::stringstream chatcmplid;
+    chatcmplid << "chatcmpl-" << random_string();
+    return chatcmplid.str();
+}
+
+static json format_final_response_oaicompat(llama_server_context &llama, const std::string &content, const std::vector<completion_token_output> &probs, const std::string &modelname, bool streaming = false)
 {
-    json choices = json::array({
+    json choices = streaming ? json::array({
+        json{
+            {"finish_reason", !(llama.stopped_word || llama.stopped_eos) ? "length" : "stop"},
+            {"index", 0},
+            {"delta", json::object()}
+        }
+    }) : json::array({
         json{
             {"finish_reason", !(llama.stopped_word || llama.stopped_eos) ? "length" : "stop"},
             {"index", 0},
@@ -1149,8 +1165,8 @@ static json format_final_response_oaicompat(llama_server_context &llama, const s
 
     // std::cout << "CHOICES:" << choices.dump() << std::endl;
 
-    std::stringstream chatcmplid;
-    chatcmplid << "chatcmpl-" << random_string();
+    // std::stringstream chatcmplid;
+    // chatcmplid << "chatcmpl-" << random_string();
 
     std::time_t t = std::time(0);
 
@@ -1158,13 +1174,13 @@ static json format_final_response_oaicompat(llama_server_context &llama, const s
         {"choices", choices},
         {"created", t},
         {"model", modelname},
-        {"object", "chat.completion"},
+        {"object", streaming ? "chat.completion.chunk" : "chat.completion"},
         {"usage", json{
             {"completion_tokens", llama.num_tokens_predicted},
             {"prompt_tokens", llama.num_prompt_tokens},
             {"total_tokens", llama.num_tokens_predicted + llama.num_prompt_tokens}
         }},
-        {"id", chatcmplid.str()}
+        {"id", gen_chatcmplid()}
     };
 
     if (server_verbose) {
@@ -1206,6 +1222,133 @@ static json format_partial_response(
     {
         res["completion_probabilities"] = probs_vector_to_json(llama.ctx, probs);
     }
+
+    return res;
+}
+
+static json format_partial_response_oaicompat(
+    llama_server_context &llama, const std::string &content,
+    const std::vector<completion_token_output> &probs, std::string modelname,
+    bool first, std::string finish_reason
+) {
+
+    std::time_t t = std::time(0);
+    
+    json choices;
+
+    if (!finish_reason.empty()) {
+        choices = json::array({
+            json{
+                {"finish_reason", finish_reason},
+                {"index", 0},
+                {"delta", json::object()}
+            }
+        });
+    } else { 
+        if (first) {
+            if (content.empty()) {
+                choices = json::array({
+                    json{
+                        {"finish_reason", nullptr},
+                        {"index", 0},
+                        {"delta", json{
+                            {"role", "assistant"}
+                        }}
+                    }
+                });
+            } else {
+                choices = json::array({
+                    json{
+                        {"finish_reason", nullptr},
+                        {"index", 0},
+                        {"delta", json{
+                            {"role", "assistant"},
+                            {"content", content}
+                        }}
+                    }
+                });
+            }
+        } else {
+            choices = json::array({
+                json{
+                    {"finish_reason", nullptr},
+                    {"index", 0},
+                    {"delta", json{
+                        {"content", content},
+                    }},
+                }
+            });
+        }
+    }
+
+    json res = json{
+        {"choices", choices},
+        {"created", t},
+        {"id", gen_chatcmplid()},
+        {"model", modelname},
+        {"object", "chat.completion.chunk"}
+    };
+
+    /*
+    {
+    "choices": [
+        {
+        "delta": {
+            "role": "assistant"
+        },
+        "finish_reason": null,
+        "index": 0
+        }
+    ],
+    "created": 1677825464,
+    "id": "chatcmpl-6ptKyqKOGXZT6iQnqiXAH8adNLUzD",
+    "model": "gpt-3.5-turbo-0301",
+    "object": "chat.completion.chunk"
+    }
+    {
+    "choices": [
+        {
+        "delta": {
+            "content": "\n\n"
+        },
+        "finish_reason": null,
+        "index": 0
+        }
+    ],
+    "created": 1677825464,
+    "id": "chatcmpl-6ptKyqKOGXZT6iQnqiXAH8adNLUzD",
+    "model": "gpt-3.5-turbo-0301",
+    "object": "chat.completion.chunk"
+    }
+    {
+    "choices": [
+        {
+        "delta": {
+            "content": "2"
+        },
+        "finish_reason": null,
+        "index": 0
+        }
+    ],
+    "created": 1677825464,
+    "id": "chatcmpl-6ptKyqKOGXZT6iQnqiXAH8adNLUzD",
+    "model": "gpt-3.5-turbo-0301",
+    "object": "chat.completion.chunk"
+    }
+    {
+    "choices": [
+        {
+        "delta": {},
+        "finish_reason": "stop",
+        "index": 0
+        }
+    ],
+    "created": 1677825464,
+    "id": "chatcmpl-6ptKyqKOGXZT6iQnqiXAH8adNLUzD",
+    "model": "gpt-3.5-turbo-0301",
+    "object": "chat.completion.chunk"
+    }
+    */
 
     return res;
 }
@@ -1328,9 +1471,10 @@ static json parse_options_chatcompletion(const json &body, llama_server_context 
     auto & sparams = llama.params.sampling_params;
 
     // *modelname = json_value(body, "model", "gpt-3.5-turbo-0613");
+    auto oaicompat_modelname = json_value(body, "model", std::string(DEFAULT_OAICOMPAT_MODEL));
 
     json ret = json{
-        {"modelname", json_value(body, "model", std::string("gpt-3.5-turbo-0613"))}
+        {"modelname", json_value(body, "model", oaicompat_modelname)}
     };
 
     llama.stream = json_value(body, "stream", false);
@@ -1754,7 +1898,7 @@ int main(int argc, char **argv)
         llama_reset_timings(llama.ctx);
 
         auto ret = parse_options_chatcompletion(json::parse(req.body), llama);
-        auto modelname = json_value(ret, "modelname", std::string("gpt-3.5-turbo"));
+        auto modelname = json_value(ret, "model", std::string(DEFAULT_OAICOMPAT_MODEL));
 
         if (!llama.loadGrammar())
         {
@@ -1809,12 +1953,41 @@ int main(int argc, char **argv)
                 size_t sent_count = 0;
                 size_t sent_token_probs_index = 0;
 
+                // std::cout << "STREAMING\n"; 
+                if (llama.oaicompat_stream_update_ctr == 0) {
+                    const std::vector<completion_token_output> &probs = {};
+
+                    const json data = format_partial_response_oaicompat(
+                        llama, "", probs, modelname, true, ""
+                    );
+
+                    const std::string str =
+                        "data: " +
+                        data.dump(-1, ' ', false, json::error_handler_t::replace) +
+                        "\n\n";
+
+                    LOG_VERBOSE("data stream", {
+                        { "to_send", str }
+                    });
+
+                    if (!sink.write(str.data(), str.size())) {
+                        LOG_VERBOSE("stream closed", {});
+                        llama_print_timings(llama.ctx);
+                        llama.oaicompat_stream_update_ctr++;
+                        return false;
+                    }
+                    llama.oaicompat_stream_update_ctr++;
+                    return true;
+                }
+
                 while (llama.has_next_token) {
                     const completion_token_output token_with_probs = llama.doCompletion();
                     if (token_with_probs.tok == -1 || llama.multibyte_pending > 0) {
                         continue;
                     }
                     const std::string token_text = llama_token_to_piece(llama.ctx, token_with_probs.tok);
+
+                    // std::cout << "TOKEN: " << token_text << "\n"; 
 
                     size_t pos = std::min(sent_count, llama.generated_text.size());
 
@@ -1855,7 +2028,7 @@ int main(int argc, char **argv)
                             sent_token_probs_index = probs_stop_pos;
                         }
 
-                        const json data = format_partial_response(llama, to_send, probs_output);
+                        const json data = format_partial_response_oaicompat(llama, to_send, probs_output, modelname, false, "");
 
                         const std::string str =
                             "data: " +
@@ -1869,17 +2042,23 @@ int main(int argc, char **argv)
                         if (!sink.write(str.data(), str.size())) {
                             LOG_VERBOSE("stream closed", {});
                             llama_print_timings(llama.ctx);
+                            llama.oaicompat_stream_update_ctr++;
                             return false;
                         }
+                        llama.oaicompat_stream_update_ctr++;
                     }
 
                     if (!llama.has_next_token) {
                         // Generation is done, send extra information.
-                        const json data = format_final_response(
-                            llama,
-                            "",
-                            std::vector<completion_token_output>(llama.generated_token_probs.begin(), llama.generated_token_probs.begin() + sent_token_probs_index)
-                        );
+                        // const json data = format_final_response(
+                        //     llama,
+                        //     "",
+                        //     std::vector<completion_token_output>(llama.generated_token_probs.begin(), llama.generated_token_probs.begin() + sent_token_probs_index)
+                        // );
+
+                        auto probs = std::vector<completion_token_output>(llama.generated_token_probs.begin(), llama.generated_token_probs.begin() + sent_token_probs_index);
+
+                        const json data = format_final_response_oaicompat(llama, llama.generated_text, probs, modelname, true);
 
                         const std::string str =
                             "data: " +
