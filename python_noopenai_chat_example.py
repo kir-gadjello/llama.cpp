@@ -1,8 +1,8 @@
 #/usr/bin/env python3
 # this example does not use openai library in favor of builtin python api
-import http.client, json
+import http.client, json, os
 
-API_ENDPOINT = "127.0.0.1:8080"
+API_ENDPOINT = os.getenv("HOST", "127.0.0.1")+":"+os.getenv("PORT", "8080")
 
 def llm_api_completion(**kwargs):
     conn = http.client.HTTPConnection(API_ENDPOINT)
